@@ -1,8 +1,8 @@
-import { generateKey } from 'crypto';
+import crypto from 'crypto';
 import { User } from '../models/user.model.js';
 import bcrypt from 'bcryptjs';
 import { generateTokenAndSetCookie } from '../utils/generateTokenAndSetCookie.js';
-import { sendVerificationEmail, sendWelcomeEmail } from '../mailtrap/email.js';
+import { sendVerificationEmail, sendWelcomeEmail ,sendPasswordResetEmail ,sendPasswordResetSuccessEmail } from '../mailtrap/email.js';
 
 export const signup = async (req, res) => {
     const { email, password, name } = req.body;
@@ -86,12 +86,134 @@ export const verifyEmail = async (req, res) => {
         });
 
     } catch (error) {
-        res.status(400).json({ message: 'Internal server error' });
+        console.error('Error verifying email:', error);
+        res.status(400).json({ 
+            success: false,
+            message: 'Internal server error' 
+        });
     }
 }
-export const login = async (req, res) => {
-    res.send('Login route');
+
+export const forgotPassword = async (req, res) => {
+    const { email } = req.body;
+    try {
+        // Check if the user exists
+        const user = await User.findOne({ email });
+        if (!user) {
+            return res.status(400).json({ message: 'User not found' });
+        }
+
+        // Generate a reset password token
+        const resetToken = crypto.randomBytes(20).toString('hex');
+        user.resetPasswordToken = resetToken;
+        user.resetPasswordExpiresAt = Date.now() + 1 * 60 * 60 * 1000; // 1 hour
+        await user.save();
+
+        // Send the reset password email
+        await sendPasswordResetEmail(user.email, `${process.env.CLIENT_URL}/reset-password/${resetToken}`);
+
+        res.status(200).json({ 
+            success: true,
+            message: 'Reset password email sent successfully. Please check your inbox.', 
+        });
+
+    } catch (error) {
+        console.error('Error sending reset password email:', error);
+        res.status(500).json({ 
+            success: false,
+            message: 'Internal server error' 
+        });
+    }
+
 }
+
+export const login = async (req, res) => {
+    const {email,password} = req.body;
+
+    try{
+        const user = await User.findOne({email});
+        // check if user exists
+        if(!user){
+            return res.status(400).json({
+                success: false,
+                message: 'User not found'
+            });
+        }
+
+        // check if password is correct
+        const isPasswordValid = await bcrypt.compare(password, user.password);
+        if(!isPasswordValid){
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid password'
+            });
+        }
+
+        //update last login time
+        user.lastLogin = Date.now();
+        await user.save();
+
+        // Send a success response
+        res.status(200).json({
+            success: true,
+            message: 'Login successful',
+            user: {
+                ...user._doc,
+                password: undefined,
+            },
+        });
+    }catch (error){
+        console.error('Error logging in:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Internal server error'
+        });
+    }
+
+}
+
 export const logout = async (req, res) => {
-    res.send('Logout route');
+    res.clearCookie('token');
+    res.status(200).json({ 
+        success: true,
+        message: 'Logged out successfully' 
+    });
+}
+
+export const resetPassword = async (req, res) => {
+    const { token } = req.params;
+    const { password } = req.body;
+
+    try {
+        // Find the user by the reset token
+        const user = await User.findOne({
+            resetPasswordToken: token,
+            resetPasswordExpiresAt: { $gt: Date.now() }
+        });
+
+        // Check if the token is valid and not expired
+        if (!user) {
+            return res.status(400).json({ message: 'Invalid or expired reset token' });
+        }
+
+        // Hash the new password and update the user
+        user.password = await bcrypt.hash(password, 10);
+        user.resetPasswordToken = undefined;
+        user.resetPasswordExpiresAt = undefined;
+        await user.save();
+
+        await sendPasswordResetSuccessEmail(user.email);
+
+        res.status(200).json({
+            success: true,
+            message: 'Password reset successfully'
+        });
+
+    } catch (error) {
+        console.error('Error resetting password:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Internal server error'
+        });
+    }
 }

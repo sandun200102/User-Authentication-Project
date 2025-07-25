@@ -2,7 +2,48 @@ import crypto from 'crypto';
 import { User } from '../models/user.model.js';
 import bcrypt from 'bcryptjs';
 import { generateTokenAndSetCookie } from '../utils/generateTokenAndSetCookie.js';
-import { sendVerificationEmail, sendWelcomeEmail ,sendPasswordResetEmail ,sendPasswordResetSuccessEmail } from '../mailtrap/email.js';
+import { sendVerificationEmailGoogle } from '../mailtrap/sendVerificationCode.js';
+import { sendWelcomeEmailGoogle } from '../mailtrap/sendWelcomeEmail.js';
+import { sendPasswordResetEmailGoogle } from '../mailtrap/forgetPasswordEmail.js';
+import { resetPasswordSuccessEmailGoogle } from '../mailtrap/resetPasswordSuccess.js';
+import { OAuth2Client } from 'google-auth-library';
+
+
+const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+export const googleLogin = async (req, res) => {
+  const { token } = req.body;
+
+  try {
+    const ticket = await client.verifyIdToken({
+      idToken: token,
+      audience: process.env.GOOGLE_CLIENT_ID,
+    });
+
+    const payload = ticket.getPayload();
+
+    let user = await User.findOne({ email: payload.email });
+
+    if (!user) {
+      user = new User({
+        googleId: payload.sub,
+        name: payload.name,
+        email: payload.email,
+        password: crypto.randomBytes(16).toString('hex'), // Generate a random password
+        isAdmin: false,
+        isVerified: true, // Google users are considered verified
+        role: 'user',
+      });
+      await user.save();
+      await sendWelcomeEmailGoogle(user.email, user.name);
+
+    }
+
+    res.json({ message: 'User authenticated', user });
+  } catch (error) {
+    console.error('Google login error:', error);
+    res.status(401).json({ error: 'Invalid token' });
+  }
+};
 
 export const signup = async (req, res) => {
     const { email, password, name } = req.body;
@@ -26,6 +67,7 @@ export const signup = async (req, res) => {
             password : hashedPassword, 
             name ,
             role : 'user',
+            isAdmin: false,
             verificationToken ,
             verificationTokenExpiresAt: Date.now() + 24*60*60*1000, // 24 hour
 
@@ -35,8 +77,8 @@ export const signup = async (req, res) => {
         //jwt
         generateTokenAndSetCookie(res, user._id);
 
-        await sendVerificationEmail(user.email, verificationToken);
-            res.status(200).json({ 
+        await sendVerificationEmailGoogle(user.email, verificationToken);
+        res.status(200).json({ 
                 success: true,
                 message: 'User created successfully',
                 user:{
@@ -45,9 +87,8 @@ export const signup = async (req, res) => {
                 },
             });
 
-        
-
     } catch (error) {
+        console.error(error); // Add this line
         res.status(400).json({ message: 'Internal server error' });
     }
 }
@@ -72,8 +113,8 @@ export const verifyEmail = async (req, res) => {
         await user.save();
 
         // Send a welcome email
-        await sendWelcomeEmail(user.email, user.name);
-        
+        // await sendWelcomeEmail(user.email, user.name);
+        await sendWelcomeEmailGoogle(user.email, user.name);
         // Send a success response
         res.status(200).json({ 
             success: true,
@@ -94,6 +135,7 @@ export const verifyEmail = async (req, res) => {
     }
 }
 
+
 export const forgotPassword = async (req, res) => {
     const { email } = req.body;
     try {
@@ -110,7 +152,8 @@ export const forgotPassword = async (req, res) => {
         await user.save();
 
         // Send the reset password email
-        await sendPasswordResetEmail(user.email, `${process.env.CLIENT_URL}/reset-password/${resetToken}`);
+        // await sendPasswordResetEmail(user.email, `${process.env.CLIENT_URL}/reset-password/${resetToken}`);
+        await sendPasswordResetEmailGoogle(user.email, user.name, resetToken, process.env.CLIENT_URL);
 
         res.status(200).json({ 
             success: true,
@@ -203,7 +246,8 @@ export const resetPassword = async (req, res) => {
         user.resetPasswordExpiresAt = undefined;
         await user.save();
 
-        await sendPasswordResetSuccessEmail(user.email);
+        // await sendPasswordResetSuccessEmail(user.email);
+        await resetPasswordSuccessEmailGoogle(user.email, user.name);
 
         res.status(200).json({
             success: true,
@@ -218,6 +262,7 @@ export const resetPassword = async (req, res) => {
         });
     }
 }
+
 
 export const checkAuth = async (req, res) => {
 	try {
